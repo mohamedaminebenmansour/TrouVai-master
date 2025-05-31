@@ -1,6 +1,18 @@
 import requests
 
-def generate_answer_with_llm(contexts, query, history=None):
+def generate_answer_with_llm(contexts, query, history=None, model="llama2"):
+    """
+    Generate a response using a specified LLM model via Ollama.
+    
+    Args:
+        contexts: List of context documents.
+        query: User query string.
+        history: Conversation history (optional).
+        model: Name of the model to use (e.g., 'llama2', 'gemma', 'llama3', 'mistral').
+    
+    Returns:
+        Generated response or error message.
+    """
     prompt = (
         "Tu es un assistant intelligent, amical, et très performant. "
         "Tu comprends parfaitement les fautes d'orthographe, de grammaire, les abréviations, et même les questions mal formulées. "
@@ -29,7 +41,7 @@ def generate_answer_with_llm(contexts, query, history=None):
         response = requests.post(
             "http://localhost:11434/api/generate",
             json={
-                "model": "llama2",
+                "model": model,  # Use the specified model
                 "prompt": prompt,
                 "stream": False
             },
@@ -39,5 +51,5 @@ def generate_answer_with_llm(contexts, query, history=None):
         return response.json().get("response", "").strip()
 
     except requests.exceptions.RequestException as e:
-        print("Erreur LLM (Ollama):", e)
+        print(f"Erreur LLM (Ollama, modèle {model}): {e}")
         return "Je suis désolé, je n’ai pas pu générer de réponse pour le moment."

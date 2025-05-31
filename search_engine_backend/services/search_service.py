@@ -3,11 +3,48 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .web_scraper import scrape_web
 from .llm_answer import generate_answer_with_llm
 from utils.message_filter import analyze_message
+import logging
+import numpy as np
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Explicitly initialize SentenceTransformer to avoid conflicts
+try:
+    transformer_model = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception as e:
+    logger.error(f"Failed to initialize SentenceTransformer: {str(e)}", exc_info=True)
+    transformer_model = None
+
 chat_memory = {}
 
-def hybrid_search(query, user_id=None, top_k=5):
+def hybrid_search(query, user_id=None, top_k=5, model="llama2"):
+    """
+    Perform a hybrid search and generate a response using the specified LLM model.
+    
+    Args:
+        query: User query string.
+        user_id: User ID for context (optional).
+        top_k: Number of top documents to consider.
+        model: Name of the LLM model to use (e.g., 'llama2', 'gemma', 'llama3.1', 'mistral').
+    
+    Returns:
+        Dictionary with answer and sources.
+    """
+    if not isinstance(query, str):
+        logger.error(f"Invalid query type: {type(query)}. Expected string.")
+        return {"answer": "Erreur : la requête doit être une chaîne de caractères.", "sources": []}
+
+    if transformer_model is None:
+        logger.error("SentenceTransformer model failed to initialize.")
+        history = chat_memory.get(user_id, []) if user_id else []
+        answer = generate_answer_with_llm([], query, history=history, model=model)
+        return {
+            "answer": f"Erreur : impossible de générer des embeddings, mais voici une réponse : {answer}",
+            "sources": []
+        }
+
     analysis = analyze_message(query)
 
     response_prefix = ""
@@ -23,43 +60,79 @@ def hybrid_search(query, user_id=None, top_k=5):
         else:
             return {"answer": "Je suis là pour t'aider ! Pose-moi ta question 😊", "sources": []}
 
-    # Sinon, lancer recherche intelligente
+    # Lancer recherche intelligente
+    logger.info(f"Scraping web for query: {query}")
     web_results = scrape_web(query)
+    logger.info(f"Web results: {len(web_results)} documents retrieved")
+    logger.debug(f"Web results content: {[doc.get('url', 'No URL') for doc in web_results]}")
 
     if not web_results:
+
+        logger.warning("No web results found, falling back to LLM without context.")
         history = chat_memory.get(user_id, []) if user_id else []
-        answer = generate_answer_with_llm([], query, history=history)
+        answer = generate_answer_with_llm([], query, history=history, model=model)
         return {
             "answer": response_prefix + answer,
             "sources": []
         }
 
-    texts = [doc["text"] for doc in web_results]
-    query_embedding = model.encode([query])
-    doc_embeddings = model.encode(texts)
-    similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+    # Filter valid texts
+    texts = [doc["text"] for doc in web_results if isinstance(doc.get("text"), str) and doc.get("text")]
+    logger.info(f"Valid texts for embedding: {len(texts)}")
+    if not texts:
+        logger.warning("No valid texts found in web results.")
+        history = chat_memory.get(user_id, []) if user_id else []
+        answer = generate_answer_with_llm([], query, history=history, model=model)
+        return {
+            "answer": response_prefix + answer,
+            "sources": []
+        }
 
+    try:
+        # Encode query and documents using explicit SentenceTransformer reference
+        query_embedding = transformer_model.encode(query)
+        doc_embeddings = transformer_model.encode(texts)
+        # Ensure embeddings are NumPy arrays
+        query_embedding = np.array(query_embedding).reshape(1, -1)
+        doc_embeddings = np.array(doc_embeddings)
+        similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+    except Exception as e:
+        logger.error(f"Error in embedding generation: {str(e)}", exc_info=True)
+        history = chat_memory.get(user_id, []) if user_id else []
+        answer = generate_answer_with_llm([], query, history=history, model=model)
+        return {
+            "answer": response_prefix + f"Erreur lors de la génération des embeddings, mais voici une réponse : {answer}",
+            "sources": []
+        }
+
+    # Assign scores to documents
     for i, doc in enumerate(web_results):
-        doc["score"] = float(similarities[i])
+        doc["score"] = float(similarities[i]) if i < len(similarities) else 0.0
         doc["source"] = "web"
 
     sorted_docs = sorted(web_results, key=lambda x: x["score"], reverse=True)[:top_k]
-    history = chat_memory.get(user_id, []) if user_id else []
-    answer = generate_answer_with_llm(sorted_docs, query, history=history)
+    logger.info(f"Top {top_k} documents selected with scores: {[doc['score'] for doc in sorted_docs]}")
 
+    # Generate answer with LLM
+    history = chat_memory.get(user_id, []) if user_id else []
+    answer = generate_answer_with_llm(sorted_docs, query, history=history, model=model)
+
+    # Update chat memory
     if user_id:
         chat_memory.setdefault(user_id, []).append({
             "user": query,
             "bot": answer
         })
 
+    # Extract sources
     sources = []
     for doc in sorted_docs:
         url = doc.get("url")
-        if url and url not in sources:
+        if url and isinstance(url, str) and url not in sources:
             sources.append(url)
         if len(sources) >= 4:
             break
+    logger.info(f"Sources extracted: {sources}")
 
     return {
         "answer": response_prefix + answer,

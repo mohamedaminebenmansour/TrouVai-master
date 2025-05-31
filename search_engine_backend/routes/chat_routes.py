@@ -6,6 +6,7 @@ from models.history_model import History, Conversation
 import re
 import json
 from datetime import datetime, timedelta
+from services.llm_answer import  generate_answer_with_llm # Import the updated function
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -45,13 +46,19 @@ def chat():
         query = data.get("query", "").strip()
         user_id = data.get("user_id")
         messages = data.get("messages", [])
+        model = data.get("model", "llama2")  # Default to llama2 if no model specified
+
+        # Validate model
+        allowed_models = ["llama2", "gemma", "llama3", "mistral"]
+        if model not in allowed_models:
+            return jsonify({"error": f"Modèle non supporté. Choisissez parmi : {', '.join(allowed_models)}"}), 400
 
         if not query:
             return jsonify({"error": "Le champ 'query' est requis"}), 400
         if not user_id or not isinstance(user_id, int):
             return jsonify({"error": "Le champ 'user_id' est requis et doit être un entier"}), 400
 
-        current_app.logger.info(f"[Chat] Query: {query} | User ID: {user_id}")
+        current_app.logger.info(f"[Chat] Query: {query} | User ID: {user_id} | Model: {model}")
 
         # Analyze the message
         try:
@@ -62,17 +69,18 @@ def chat():
             current_app.logger.error(f"Error in analyze_message: {str(e)}", exc_info=True)
             return jsonify({"error": "Erreur lors de l'analyse du message."}), 500
 
-        
-            # Technical processing via LLM + Web
+        # Technical processing via LLM + Web
         try:
-            result = hybrid_search(query=query, user_id=user_id)
+            # Pass the model parameter to hybrid_search or directly to generate_answer_with_llm
+            # Assuming hybrid_search uses generate_answer_with_llm internally
+            result = hybrid_search(query=query, user_id=user_id, model=model)
             formatted_answer = format_answer_for_readability(result["answer"])
             if greeting:
                 formatted_answer = f"{greeting} ! 😊\n\n{formatted_answer}"
             response = {
                 "answer": formatted_answer,
                 "sources": result.get("sources", [])
-                }
+            }
         except Exception as e:
             current_app.logger.error(f"Error in hybrid_search: {str(e)}", exc_info=True)
             return jsonify({"error": "Erreur dans la recherche hybride."}), 500
