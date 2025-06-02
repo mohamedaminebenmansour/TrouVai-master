@@ -3,10 +3,11 @@ from services.search_service import hybrid_search
 from utils.message_filter import analyze_message
 from extensions import db
 from models.history_model import History, Conversation
+from utils.auth_utils import token_required
 import re
 import json
 from datetime import datetime, timedelta
-from services.llm_answer import  generate_answer_with_llm # Import the updated function
+from services.llm_answer import generate_answer_with_llm
 
 chat_bp = Blueprint("chat", __name__)
 
@@ -46,19 +47,40 @@ def chat():
         query = data.get("query", "").strip()
         user_id = data.get("user_id")
         messages = data.get("messages", [])
-        model = data.get("model", "llama2")  # Default to llama2 if no model specified
+        model = data.get("model", "llama3")
+
+        # Check for JWT token to determine if user is authenticated
+        auth_header = request.headers.get('Authorization')
+        current_user = None
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            try:
+                # Assuming token_required or a similar function can validate the token and return the user
+                from utils.auth_utils import decode_jwt  # Import or define a function to decode JWT
+                user_id_from_token = decode_jwt(token)
+                from models.user_model import User
+                current_user = User.query.filter_by(id=user_id_from_token).first()
+                if not current_user:
+                    current_app.logger.warning(f"Invalid token: no user found for ID {user_id_from_token}")
+                    return jsonify({"error": "Token invalide"}), 401
+            except Exception as e:
+                current_app.logger.warning(f"Token validation failed: {str(e)}")
+                # Continue as unauthenticated if token is invalid
+                pass
+
+        # Define available models based on authentication status
+        allowed_models = ["llama2", "gemma", "llama3", "mistral"] if current_user else ["llama3", "mistral"]
 
         # Validate model
-        allowed_models = ["llama2", "gemma", "llama3", "mistral"]
         if model not in allowed_models:
             return jsonify({"error": f"Modèle non supporté. Choisissez parmi : {', '.join(allowed_models)}"}), 400
 
         if not query:
             return jsonify({"error": "Le champ 'query' est requis"}), 400
-        if not user_id or not isinstance(user_id, int):
-            return jsonify({"error": "Le champ 'user_id' est requis et doit être un entier"}), 400
+        if current_user and (not user_id or not isinstance(user_id, int) or user_id != current_user.id):
+            return jsonify({"error": "Le champ 'user_id' est requis, doit être un entier et correspondre à l'utilisateur connecté"}), 400
 
-        current_app.logger.info(f"[Chat] Query: {query} | User ID: {user_id} | Model: {model}")
+        current_app.logger.info(f"[Chat] Query: {query} | User ID: {user_id or 'unauthenticated'} | Model: {model}")
 
         # Analyze the message
         try:
@@ -71,9 +93,7 @@ def chat():
 
         # Technical processing via LLM + Web
         try:
-            # Pass the model parameter to hybrid_search or directly to generate_answer_with_llm
-            # Assuming hybrid_search uses generate_answer_with_llm internally
-            result = hybrid_search(query=query, user_id=user_id, model=model)
+            result = hybrid_search(query=query, user_id=user_id if current_user else None, model=model)
             formatted_answer = format_answer_for_readability(result["answer"])
             if greeting:
                 formatted_answer = f"{greeting} ! 😊\n\n{formatted_answer}"
@@ -89,39 +109,38 @@ def chat():
         messages.append({"role": "user", "content": query})
         messages.append({"role": "assistant", "content": response["answer"]})
 
-        # Check if this is a new chat session
-        try:
-            latest_history = db.session.query(History).filter_by(user_id=user_id).order_by(History.created_at.desc()).first()
-            is_new_chat = (
-                not latest_history or
-                datetime.utcnow() - latest_history.created_at > timedelta(minutes=5)
-            )
-
-            if is_new_chat:
-                # Create new History and Conversation for the first query
-                new_history = History(user_id=user_id, search_query=query)
-                db.session.add(new_history)
-                db.session.flush()  # Ensure history_id is available
-                new_conversation = Conversation(
-                    history_id=new_history.id,
-                    messages=json.dumps(messages),
-                    sources=json.dumps(response["sources"])
+        # Save history and conversation only for authenticated users
+        if current_user:
+            try:
+                latest_history = db.session.query(History).filter_by(user_id=user_id).order_by(History.created_at.desc()).first()
+                is_new_chat = (
+                    not latest_history or
+                    datetime.utcnow() - latest_history.created_at > timedelta(minutes=5)
                 )
-                db.session.add(new_conversation)
-            else:
-                # Update existing Conversation with the latest messages and sources
-                conversation = db.session.query(Conversation).filter_by(history_id=latest_history.id).first()
-                if conversation:
-                    existing_messages = json.loads(conversation.messages)
-                    existing_sources = json.loads(conversation.sources) if conversation.sources else []
-                    existing_messages.extend(messages)
-                    conversation.messages = json.dumps(existing_messages)
-                    conversation.sources = json.dumps(list(set(existing_sources + response["sources"])))  # Avoid duplicates
-            db.session.commit()
-        except Exception as e:
-            db.session.rollback()
-            current_app.logger.error(f"Database error: {str(e)}", exc_info=True)
-            return jsonify({"error": "Erreur lors de la gestion de l'historique ou de la conversation."}), 500
+
+                if is_new_chat:
+                    new_history = History(user_id=user_id, search_query=query)
+                    db.session.add(new_history)
+                    db.session.flush()
+                    new_conversation = Conversation(
+                        history_id=new_history.id,
+                        messages=json.dumps(messages),
+                        sources=json.dumps(response["sources"])
+                    )
+                    db.session.add(new_conversation)
+                else:
+                    conversation = db.session.query(Conversation).filter_by(history_id=latest_history.id).first()
+                    if conversation:
+                        existing_messages = json.loads(conversation.messages)
+                        existing_sources = json.loads(conversation.sources) if conversation.sources else []
+                        existing_messages.extend(messages)
+                        conversation.messages = json.dumps(existing_messages)
+                        conversation.sources = json.dumps(list(set(existing_sources + response["sources"])))
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.error(f"Database error: {str(e)}", exc_info=True)
+                return jsonify({"error": "Erreur lors de la gestion de l'historique ou de la conversation."}), 500
 
         return jsonify(response), 200
 
