@@ -13,19 +13,8 @@ export default function HomePage() {
     : ["llama3", "mistral"];
 
   const handleKeyPress = (e) => {
-    console.log("HomePage handleKeyPress triggered", {
-      key: e.key,
-      shiftKey: e.shiftKey,
-      query: query.trim(),
-      timestamp: Date.now(),
-    });
     if (e.key === "Enter" && !e.shiftKey && query.trim()) {
       e.preventDefault();
-      console.log("HomePage navigating to /chat", {
-        query: query.trim(),
-        model: selectedModel,
-        timestamp: Date.now(),
-      });
       navigate("/chat", {
         state: {
           query: query.trim(),

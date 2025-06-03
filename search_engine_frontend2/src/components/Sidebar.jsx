@@ -29,23 +29,19 @@ export default function Sidebar({
   const navigate = useNavigate();
 
   const handleReturnHome = () => {
-    navigate("/"); // Navigate to homepage
+    navigate("/");
   };
 
   useEffect(() => {
-    console.log("Sidebar Initial History Prop:", initialHistory);
     const fetchHistory = async () => {
       try {
         const data = await apiFetch("/history", { method: "GET" });
-        console.log("Sidebar Fetched History Data:", data);
         setHistory(data.history || []);
         setHistoryError(null);
       } catch (error) {
-        console.error("History fetch error:", error);
         setHistoryError(error.message);
         if (error.message.includes("Session expired") || error.message.includes("401")) {
-          console.log("Attempting token refresh...");
-          // Implement token refresh logic here if needed
+          // Token refresh logic could be added here
         }
       }
     };
@@ -57,10 +53,6 @@ export default function Sidebar({
       setHistoryError(null);
     }
   }, [isAuthenticated, initialHistory]);
-
-  useEffect(() => {
-    console.log("Sidebar Resources Prop:", resources);
-  }, [resources]);
 
   const handleToggle = () => {
     setExpanded(!expanded);

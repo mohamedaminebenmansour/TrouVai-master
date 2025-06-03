@@ -6,7 +6,7 @@ import { message } from "../../interfaces/interfaces";
 import { Overview } from "@/components/custom/overview";
 import { apiFetch } from "../../utils/api";
 import Sidebar from "../../components/Sidebar";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useNavigationType } from "react-router-dom";
 
 export function Chat() {
   const [messagesContainerRef, messagesEndRef] = useScrollToBottom<HTMLDivElement>();
@@ -22,6 +22,7 @@ export function Chat() {
   const hasProcessedInitialQuery = useRef<boolean>(false);
   const navigate = useNavigate();
   const { state } = useLocation();
+  const navigationType = useNavigationType();
 
   // Model selector state
   const isAuthenticated = !!localStorage.getItem("token");
@@ -46,9 +47,16 @@ export function Chat() {
       stateQuery: state?.query,
       isLoading,
       hasProcessedInitialQuery: hasProcessedInitialQuery.current,
+      navigationType,
       timestamp: Date.now(),
     });
-    if (state?.query && !isLoading && !hasProcessedInitialQuery.current) {
+    // Only process the query if coming from a "PUSH" navigation (e.g., from homepage)
+    if (
+      state?.query &&
+      !isLoading &&
+      !hasProcessedInitialQuery.current &&
+      navigationType === "PUSH"
+    ) {
       console.log("Processing initial query", {
         query: state.query,
         model: state.model || models[0],
@@ -56,8 +64,13 @@ export function Chat() {
       });
       hasProcessedInitialQuery.current = true;
       handleSubmit(state.query, state.model || models[0]);
+      // Clear the location state after processing to prevent re-triggering
+      navigate(
+        { pathname: window.location.pathname },
+        { replace: true, state: {} }
+      );
     }
-  }, [state?.query, state?.model, isLoading, models]);
+  }, [state?.query, state?.model, isLoading, models, navigationType, navigate]);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -180,7 +193,11 @@ export function Chat() {
     setResources([]);
     setQuestion("");
     hasProcessedInitialQuery.current = false;
-    window.location.reload();
+    // Clear the location state to prevent re-triggering the initial query
+    navigate(
+      { pathname: window.location.pathname },
+      { replace: true, state: {} }
+    );
   };
 
   return (
