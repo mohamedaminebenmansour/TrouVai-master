@@ -19,7 +19,7 @@ export function Chat() {
   >([]);
   const [username, setUsername] = useState<string>(localStorage.getItem("username") || "User");
   const [historyError, setHistoryError] = useState<string | null>(null);
-  const processedQueries = useRef<Set<string>>(new Set());
+  const hasProcessedInitialQuery = useRef<boolean>(false);
   const navigate = useNavigate();
   const { state } = useLocation();
 
@@ -36,7 +36,7 @@ export function Chat() {
     isAuthenticated,
     selectedModel,
     messagesLength: messages.length,
-    processedQueries: Array.from(processedQueries.current),
+    hasProcessedInitialQuery: hasProcessedInitialQuery.current,
     timestamp: Date.now(),
   });
 
@@ -45,22 +45,19 @@ export function Chat() {
     console.log("useEffect for initial query triggered", {
       stateQuery: state?.query,
       isLoading,
-      processedQueries: Array.from(processedQueries.current),
+      hasProcessedInitialQuery: hasProcessedInitialQuery.current,
       timestamp: Date.now(),
     });
-    if (state?.query && !isLoading) {
-      const queryId = `${state.query}-${state.model || models[0]}`;
-      if (!processedQueries.current.has(queryId)) {
-        console.log("Processing initial query", { queryId, query: state.query, model: state.model || models[0] });
-        processedQueries.current.add(queryId);
-        handleSubmit(state.query, state.model || models[0]);
-        // Clear state to prevent re-processing
-        navigate("/chat", { state: null, replace: true });
-      } else {
-        console.log("Skipping duplicate query", { queryId, query: state.query });
-      }
+    if (state?.query && !isLoading && !hasProcessedInitialQuery.current) {
+      console.log("Processing initial query", {
+        query: state.query,
+        model: state.model || models[0],
+        timestamp: Date.now(),
+      });
+      hasProcessedInitialQuery.current = true;
+      handleSubmit(state.query, state.model || models[0]);
     }
-  }, [state?.query, state?.model, isLoading, models, navigate]);
+  }, [state?.query, state?.model, isLoading, models]);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -100,35 +97,12 @@ export function Chat() {
     if (isLoading) return;
 
     const messageText = text || question;
-    const queryId = `${messageText}-${model}`;
     console.log("handleSubmit called", {
-      queryId,
       messageText,
       model,
       isAuthenticated,
       timestamp: Date.now(),
     });
-
-    if (processedQueries.current.has(queryId)) {
-      console.log("Skipping duplicate handleSubmit", { queryId, messageText });
-      return;
-    }
-    processedQueries.current.add(queryId);
-
-    const userIdRaw = localStorage.getItem("user_id");
-    let userId: number | null = null;
-
-    if (isAuthenticated && userIdRaw) {
-      userId = parseInt(userIdRaw, 10);
-      if (isNaN(userId)) {
-        console.error("Invalid user_id in localStorage:", userIdRaw);
-        setMessages((prev) => [
-          ...prev,
-          { content: "Erreur: ID utilisateur invalide. Veuillez vous reconnecter.", role: "assistant", id: Date.now().toString() },
-        ]);
-        return;
-      }
-    }
 
     setIsLoading(true);
     setMessages((prev) => [
@@ -137,7 +111,7 @@ export function Chat() {
     ]);
     setQuestion("");
     console.log("User Data before Chat Request:", {
-      userId,
+      userId: localStorage.getItem("user_id"),
       username,
       messageText,
       model,
@@ -148,8 +122,8 @@ export function Chat() {
         method: "POST",
         body: JSON.stringify({ 
           query: messageText, 
-          user_id: userId, 
-          messages: [], 
+          user_id: isAuthenticated ? parseInt(localStorage.getItem("user_id") || "0", 10) : null,
+          messages: [],
           model 
         }),
       });
@@ -205,7 +179,7 @@ export function Chat() {
     setMessages([]);
     setResources([]);
     setQuestion("");
-    processedQueries.current.clear();
+    hasProcessedInitialQuery.current = false;
     window.location.reload();
   };
 
