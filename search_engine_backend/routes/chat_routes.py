@@ -55,8 +55,7 @@ def chat():
         if auth_header and auth_header.startswith('Bearer '):
             token = auth_header.split(' ')[1]
             try:
-                # Assuming token_required or a similar function can validate the token and return the user
-                from utils.auth_utils import decode_jwt  # Import or define a function to decode JWT
+                from utils.auth_utils import decode_jwt
                 user_id_from_token = decode_jwt(token)
                 from models.user_model import User
                 current_user = User.query.filter_by(id=user_id_from_token).first()
@@ -77,8 +76,11 @@ def chat():
 
         if not query:
             return jsonify({"error": "Le champ 'query' est requis"}), 400
-        if current_user and (not user_id or not isinstance(user_id, int) or user_id != current_user.id):
-            return jsonify({"error": "Le champ 'user_id' est requis, doit être un entier et correspondre à l'utilisateur connecté"}), 400
+
+        # Validate user_id only if provided and user is authenticated
+        if current_user and user_id:
+            if not isinstance(user_id, int) or user_id != current_user.id:
+                return jsonify({"error": "Le champ 'user_id' doit être un entier et correspondre à l'utilisateur connecté"}), 400
 
         current_app.logger.info(f"[Chat] Query: {query} | User ID: {user_id or 'unauthenticated'} | Model: {model}")
 
@@ -110,7 +112,7 @@ def chat():
         messages.append({"role": "assistant", "content": response["answer"]})
 
         # Save history and conversation only for authenticated users
-        if current_user:
+        if current_user and user_id:
             try:
                 latest_history = db.session.query(History).filter_by(user_id=user_id).order_by(History.created_at.desc()).first()
                 is_new_chat = (

@@ -1,12 +1,12 @@
 import { ChatInput } from "@/components/custom/chatinput";
 import { PreviewMessage, ThinkingMessage } from "../../components/custom/message";
 import { useScrollToBottom } from "@/components/custom/use-scroll-to-bottom";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { message } from "../../interfaces/interfaces";
 import { Overview } from "@/components/custom/overview";
 import { apiFetch } from "../../utils/api";
 import Sidebar from "../../components/Sidebar";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 export function Chat() {
   const [messagesContainerRef, messagesEndRef] = useScrollToBottom<HTMLDivElement>();
@@ -19,7 +19,48 @@ export function Chat() {
   >([]);
   const [username, setUsername] = useState<string>(localStorage.getItem("username") || "User");
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const processedQueries = useRef<Set<string>>(new Set());
   const navigate = useNavigate();
+  const { state } = useLocation();
+
+  // Model selector state
+  const isAuthenticated = !!localStorage.getItem("token");
+  const models = isAuthenticated 
+    ? ['llama2', 'gemma', 'llama3', 'mistral'] 
+    : ['llama3', 'mistral'];
+  const [selectedModel, setSelectedModel] = useState<string>(state?.model || models[0]);
+
+  // Log state on every render
+  console.log("Chat Component Render", {
+    state,
+    isAuthenticated,
+    selectedModel,
+    messagesLength: messages.length,
+    processedQueries: Array.from(processedQueries.current),
+    timestamp: Date.now(),
+  });
+
+  // Handle initial query from HomePage
+  useEffect(() => {
+    console.log("useEffect for initial query triggered", {
+      stateQuery: state?.query,
+      isLoading,
+      processedQueries: Array.from(processedQueries.current),
+      timestamp: Date.now(),
+    });
+    if (state?.query && !isLoading) {
+      const queryId = `${state.query}-${state.model || models[0]}`;
+      if (!processedQueries.current.has(queryId)) {
+        console.log("Processing initial query", { queryId, query: state.query, model: state.model || models[0] });
+        processedQueries.current.add(queryId);
+        handleSubmit(state.query, state.model || models[0]);
+        // Clear state to prevent re-processing
+        navigate("/chat", { state: null, replace: true });
+      } else {
+        console.log("Skipping duplicate query", { queryId, query: state.query });
+      }
+    }
+  }, [state?.query, state?.model, isLoading, models, navigate]);
 
   useEffect(() => {
     const fetchHistory = async () => {
@@ -33,12 +74,16 @@ export function Chat() {
         setHistoryError(error.message || "Failed to load history");
       }
     };
-    fetchHistory();
+    if (isAuthenticated) {
+      fetchHistory();
+    } else {
+      setHistory([]);
+      setHistoryError(null);
+    }
 
-    const userId = localStorage.getItem("user_id");
     const storedUsername = localStorage.getItem("username");
     console.log("Initial User Data from localStorage:", {
-      userId,
+      userId: localStorage.getItem("user_id"),
       username: storedUsername,
       token: localStorage.getItem("token"),
     });
@@ -49,34 +94,40 @@ export function Chat() {
     } else {
       setUsername(storedUsername);
     }
-  }, []);
+  }, [isAuthenticated]);
 
-  async function handleSubmit(text?: string) {
+  async function handleSubmit(text?: string, model: string = selectedModel) {
     if (isLoading) return;
 
     const messageText = text || question;
-    const userIdRaw = localStorage.getItem("user_id");
-    
-    // Validate userId
-    if (!userIdRaw) {
-      console.error("No user_id found in localStorage. Redirecting to login.");
-      setMessages((prev) => [
-        ...prev,
-        { content: "Erreur: Veuillez vous connecter.", role: "assistant", id: Date.now().toString() },
-      ]);
-      navigate("/login");
+    const queryId = `${messageText}-${model}`;
+    console.log("handleSubmit called", {
+      queryId,
+      messageText,
+      model,
+      isAuthenticated,
+      timestamp: Date.now(),
+    });
+
+    if (processedQueries.current.has(queryId)) {
+      console.log("Skipping duplicate handleSubmit", { queryId, messageText });
       return;
     }
+    processedQueries.current.add(queryId);
 
-    const userId = parseInt(userIdRaw, 10);
-    if (isNaN(userId)) {
-      console.error("Invalid user_id in localStorage:", userIdRaw);
-      setMessages((prev) => [
-        ...prev,
-        { content: "Erreur: ID utilisateur invalide. Veuillez vous reconnecter.", role: "assistant", id: Date.now().toString() },
-      ]);
-      navigate("/login");
-      return;
+    const userIdRaw = localStorage.getItem("user_id");
+    let userId: number | null = null;
+
+    if (isAuthenticated && userIdRaw) {
+      userId = parseInt(userIdRaw, 10);
+      if (isNaN(userId)) {
+        console.error("Invalid user_id in localStorage:", userIdRaw);
+        setMessages((prev) => [
+          ...prev,
+          { content: "Erreur: ID utilisateur invalide. Veuillez vous reconnecter.", role: "assistant", id: Date.now().toString() },
+        ]);
+        return;
+      }
     }
 
     setIsLoading(true);
@@ -89,12 +140,18 @@ export function Chat() {
       userId,
       username,
       messageText,
+      model,
     });
 
     try {
       const data = await apiFetch("/chat", {
         method: "POST",
-        body: JSON.stringify({ query: messageText, user_id: userId, messages: [] }),
+        body: JSON.stringify({ 
+          query: messageText, 
+          user_id: userId, 
+          messages: [], 
+          model 
+        }),
       });
       console.log("Chat API Response:", data);
       setMessages((prev) => [
@@ -104,6 +161,12 @@ export function Chat() {
       const formattedResources = (data.sources || []).map((source) => ({ title: source, url: source }));
       console.log("Formatted Resources:", formattedResources);
       setResources(formattedResources);
+
+      // Refresh history after new chat for authenticated users
+      if (isAuthenticated) {
+        const historyData = await apiFetch("/history", { method: "GET" });
+        setHistory(historyData.history || []);
+      }
     } catch (error) {
       console.error("Chat error details:", {
         message: error.message,
@@ -142,6 +205,7 @@ export function Chat() {
     setMessages([]);
     setResources([]);
     setQuestion("");
+    processedQueries.current.clear();
     window.location.reload();
   };
 
@@ -151,14 +215,34 @@ export function Chat() {
         isOpen={true}
         toggleSidebar={() => {}}
         position="left"
-        history={history}
         resources={[]}
+        history={history}
         username={username}
         onLogout={handleLogout}
         onHistoryClick={restoreConversation}
         onNewChat={handleNewChat}
       />
       <div className="flex flex-col min-w-0 flex-1">
+        <div className="flex justify-center pt-4">
+          <div className="relative inline-block text-left">
+            <select
+              className="block appearance-none w-40 bg-white border border-gray-300 hover:border-gray-400 px-4 py-2 pr-8 rounded shadow leading-tight focus:outline-none focus:shadow-outline"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              {models.map((model) => (
+                <option key={model} value={model}>
+                  {model.charAt(0).toUpperCase() + model.slice(1)}
+                </option>
+              ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+              <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+              </svg>
+            </div>
+          </div>
+        </div>
         <div className="flex flex-col min-w-0 gap-6 flex-1 overflow-y-scroll pt-4" ref={messagesContainerRef}>
           {messages.length === 0 && <Overview />}
           {messages.map((message, index) => (
