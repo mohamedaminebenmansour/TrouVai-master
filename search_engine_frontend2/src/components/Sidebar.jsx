@@ -23,7 +23,7 @@ export default function Sidebar({
 }) {
   const [expanded, setExpanded] = useState(isOpen);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [history, setHistory] = useState(initialHistory || []);
+  const [history, setHistory] = useState([]); // Clear history initially
   const [historyError, setHistoryError] = useState(null);
   const isAuthenticated = !!localStorage.getItem("token");
   const navigate = useNavigate();
@@ -32,27 +32,37 @@ export default function Sidebar({
     navigate("/");
   };
 
-  useEffect(() => {
-    const fetchHistory = async () => {
-      try {
-        const data = await apiFetch("/history", { method: "GET" });
-        setHistory(data.history || []);
-        setHistoryError(null);
-      } catch (error) {
-        setHistoryError(error.message);
-        if (error.message.includes("Session expired") || error.message.includes("401")) {
-          // Token refresh logic could be added here
-        }
-      }
-    };
-
-    if (isAuthenticated && (!initialHistory || initialHistory.length === 0)) {
-      fetchHistory();
-    } else if (!isAuthenticated) {
+  const fetchHistory = async () => {
+    if (!isAuthenticated) {
       setHistory([]);
       setHistoryError(null);
+      return;
     }
-  }, [isAuthenticated, initialHistory]);
+
+    try {
+      console.log("Sidebar: Fetching history for authenticated user");
+      const data = await apiFetch("/history", { method: "GET" });
+      console.log("Sidebar: Fetched History Data:", data);
+      setHistory(data.history || []);
+      setHistoryError(null);
+    } catch (error) {
+      console.error("Sidebar: History fetch error:", error);
+      setHistoryError(error.message);
+      if (error.message.includes("Session expired") || error.message.includes("401")) {
+        console.log("Sidebar: Attempting token refresh...");
+        // Implement token refresh logic here if needed
+      }
+    }
+  };
+
+  useEffect(() => {
+    console.log("Sidebar: Initial load, clearing history state", { timestamp: Date.now() });
+    setHistory([]);
+    setHistoryError(null);
+    if (isAuthenticated) {
+      fetchHistory();
+    }
+  }, [isAuthenticated]);
 
   const handleToggle = () => {
     setExpanded(!expanded);
@@ -116,12 +126,18 @@ export default function Sidebar({
                     <li className="text-gray-600 font-medium py-2">
                       {expanded && "History"}
                     </li>
-                    {expanded && history.length === 0 && (
+                    {expanded && historyError && (
+                      <li className="py-2 px-3 my-1 text-red-500">
+                        Failed to load history: {historyError}
+                      </li>
+                    )}
+                    {expanded && !historyError && history.length === 0 && (
                       <li className="py-2 px-3 my-1 text-gray-500">
                         No history available
                       </li>
                     )}
                     {expanded &&
+                      !historyError &&
                       history.map((item, index) => (
                         <HistoryItem key={index} item={item} onClick={() => onHistoryClick(item)} />
                       ))}
